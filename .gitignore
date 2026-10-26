@@ -1,0 +1,19 @@
+# build
+target/
+*.class
+*.jar
+
+# ide
+.idea/
+*.iml
+.vscode/
+
+# local scratch (pip leftover from tooling experiments)
+.tools/
+
+# 本地 Maven 仓库（沙箱把依赖下载限制在工程内）
+.m2/
+
+# os
+Thumbs.db
+.DS_Store

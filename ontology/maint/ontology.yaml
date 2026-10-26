@@ -1,0 +1,478 @@
+# =====================================================================
+# 设备维保本体 — 第一个垂直切片
+# 格式：ontology/v1（由 OntologyLoader 校验 JSON Schema 后写入 ont_meta）
+#
+# 约定：
+#   1. 属性 code 用驼峰，物理列用下划线，默认自动映射；
+#      例外在 binding.propertyMapping 里覆盖。
+#   2. 只有这里声明过的东西，Agent 才可能访问到。
+#   3. 改模型 = 改这个文件 + 发新版，不允许直接改库。
+# =====================================================================
+apiVersion: ontology/v1
+kind: Domain
+metadata:
+  code: maint
+  name: 设备维保
+  owner: maint-platform
+  description: 设备、维保计划、工单、技师、备件
+
+spec:
+  connector:
+    code: maint-pg
+    kind: JDBC
+    config:
+      url: 'jdbc:postgresql://localhost:5432/maint'
+      schema: maint
+    secretRef: secret/maint-pg
+
+  # -------------------------------------------------------------------
+  # 对象类型
+  # -------------------------------------------------------------------
+  objectTypes:
+    - code: site
+      name: 站点
+      primaryKey: id
+      titleProperty: name
+      owner: maint-platform
+      binding:
+        sourceKind: TABLE
+        sourceRef: maint.site
+        syncMode: VIRTUAL
+        freshnessSlaSec: 300
+      properties:
+        - { code: id,        name: 站点ID,   type: STRING, required: true,  owner: maint-platform }
+        - { code: code,      name: 站点编码, type: STRING, required: true,  owner: maint-platform }
+        - { code: name,      name: 站点名称, type: STRING, required: true,  owner: maint-platform }
+        - { code: region,    name: 区域,     type: ENUM,   typeConfig: { enum: [华东, 华南, 华北, 西南] }, owner: maint-platform }
+        - { code: siteType,  name: 站点类型, type: ENUM,   typeConfig: { enum: [泵站, 水厂, 变电站, 车间] }, owner: maint-platform }
+        - { code: address,   name: 地址,     type: STRING, owner: maint-platform }
+        - { code: openedAt,  name: 投运日期, type: DATE,   owner: maint-platform }
+
+    - code: equipment
+      name: 设备
+      primaryKey: id
+      titleProperty: name
+      owner: maint-platform
+      binding:
+        sourceKind: TABLE
+        sourceRef: maint.equipment
+        syncMode: VIRTUAL
+        baseFilter: deleted_at is null
+        propertyMapping:
+          status: eq_status          # 源系统字段名不一致，这里覆盖
+          category: eq_category
+      properties:
+        - { code: id,           name: 设备ID,   type: STRING,  required: true, owner: maint-platform }
+        - { code: code,         name: 设备编码, type: STRING,  required: true, owner: maint-platform }
+        - { code: name,         name: 设备名称, type: STRING,  required: true, owner: maint-platform }
+        - { code: category,     name: 设备类别, type: ENUM,    typeConfig: { enum: [泵, 阀, 压缩机, 电机, 变频器] }, owner: maint-platform }
+        - { code: model,        name: 型号,     type: STRING,  owner: maint-platform }
+        - { code: installDate,  name: 安装日期, type: DATE,    owner: maint-platform }
+        - { code: criticality,  name: 关键度,   type: ENUM,    typeConfig: { enum: [A, B, C] }, description: A 最高，停机影响生产, owner: maint-platform }
+        - { code: status,       name: 运行状态, type: ENUM,    typeConfig: { enum: [运行, 停机, 维修中, 报废] }, owner: maint-platform }
+        - { code: siteId,       name: 所属站点, type: REF,     typeConfig: { ref: maint.site }, owner: maint-platform }
+        - { code: ratedPowerKw, name: 额定功率, type: DECIMAL, typeConfig: { precision: 10, scale: 2, unit: kW }, owner: maint-platform }
+
+    - code: maintenancePlan
+      name: 维保计划
+      primaryKey: id
+      titleProperty: planType
+      owner: maint-platform
+      binding:
+        sourceKind: TABLE
+        sourceRef: maint.maintenance_plan
+        syncMode: VIRTUAL
+      properties:
+        - { code: id,             name: 计划ID,   type: STRING,  required: true, owner: maint-platform }
+        - { code: equipmentId,    name: 设备,     type: REF,     typeConfig: { ref: maint.equipment }, required: true, owner: maint-platform }
+        - { code: planType,       name: 计划类型, type: ENUM,    typeConfig: { enum: [巡检, 保养, 大修] }, required: true, owner: maint-platform }
+        - { code: intervalDays,   name: 周期天数, type: INT,     required: true, owner: maint-platform }
+        - { code: lastExecutedAt, name: 上次执行, type: DATE,    owner: maint-platform }
+        - { code: nextDueDate,    name: 下次到期, type: DATE,    required: true, owner: maint-platform }
+        - { code: standardRef,    name: 作业标准, type: STRING,  owner: maint-platform, description: 指向 SOP 文档编号 }
+        - { code: active,         name: 是否有效, type: BOOLEAN, required: true, owner: maint-platform }
+
+    - code: workOrder
+      name: 工单
+      primaryKey: id
+      titleProperty: code
+      owner: maint-platform
+      binding:
+        sourceKind: TABLE
+        sourceRef: maint.work_order
+        syncMode: VIRTUAL
+      properties:
+        - { code: id,           name: 工单ID,   type: STRING,    required: true, owner: maint-platform }
+        - { code: code,         name: 工单号,   type: STRING,    required: true, owner: maint-platform }
+        - { code: equipmentId,  name: 设备,     type: REF,       typeConfig: { ref: maint.equipment }, required: true, owner: maint-platform }
+        - { code: planId,       name: 来源计划, type: REF,       typeConfig: { ref: maint.maintenancePlan }, owner: maint-platform }
+        - { code: type,         name: 工单类型, type: ENUM,      typeConfig: { enum: [预防, 故障, 抢修] }, required: true, owner: maint-platform }
+        - { code: priority,     name: 优先级,   type: ENUM,      typeConfig: { enum: [P1, P2, P3, P4] }, required: true, owner: maint-platform }
+        - { code: status,       name: 工单状态, type: ENUM,      typeConfig: { enum: [待派, 已派, 处理中, 待验收, 已关闭, 已取消] }, required: true, owner: maint-platform }
+        - { code: symptom,      name: 故障现象, type: TEXT,      owner: maint-platform }
+        - { code: resolution,   name: 处理结论, type: TEXT,      owner: maint-platform }
+        - { code: reportedAt,   name: 报修时间, type: TIMESTAMP, required: true, owner: maint-platform }
+        - { code: scheduledAt,  name: 计划到场, type: TIMESTAMP, owner: maint-platform }
+        - { code: slaDueAt,     name: SLA 截止, type: TIMESTAMP, owner: maint-platform }
+        - { code: closedAt,     name: 关闭时间, type: TIMESTAMP, owner: maint-platform }
+        - { code: assigneeId,   name: 负责技师, type: REF,       typeConfig: { ref: maint.technician }, owner: maint-platform }
+
+    - code: technician
+      name: 技师
+      primaryKey: id
+      titleProperty: name
+      owner: maint-platform
+      binding:
+        sourceKind: TABLE
+        sourceRef: maint.technician
+        syncMode: VIRTUAL
+        propertyMapping:
+          skills: skill_tags
+      properties:
+        - { code: id,       name: 技师ID,   type: STRING, required: true, owner: maint-platform }
+        - { code: name,     name: 姓名,     type: STRING, required: true, owner: maint-platform }
+        - { code: level,    name: 等级,     type: ENUM,   typeConfig: { enum: [初级, 中级, 高级, 专家] }, owner: maint-platform }
+        - { code: skills,   name: 技能标签, type: JSON,   owner: maint-platform, description: '字符串数组，如 ["泵","密封件"]' }
+        - { code: siteId,   name: 所属站点, type: REF,    typeConfig: { ref: maint.site }, owner: maint-platform }
+        - { code: status,   name: 在岗状态, type: ENUM,   typeConfig: { enum: [空闲, 在工, 休假] }, owner: maint-platform }
+        - { code: phone,    name: 手机号,   type: STRING, pii: true, owner: maint-platform }
+
+    - code: sparePart
+      name: 备件
+      primaryKey: id
+      titleProperty: name
+      owner: maint-platform
+      binding:
+        sourceKind: TABLE
+        sourceRef: maint.spare_part
+        syncMode: VIRTUAL
+      properties:
+        - { code: id,          name: 备件ID,   type: STRING,  required: true, owner: maint-platform }
+        - { code: code,        name: 备件编码, type: STRING,  required: true, owner: maint-platform }
+        - { code: name,        name: 备件名称, type: STRING,  required: true, owner: maint-platform }
+        - { code: category,    name: 备件类别, type: ENUM,    typeConfig: { enum: [密封件, 轴承, 滤芯, 电气, 润滑] }, owner: maint-platform }
+        - { code: stockQty,    name: 当前库存, type: INT,     required: true, owner: maint-platform }
+        - { code: safetyStock, name: 安全库存, type: INT,     required: true, owner: maint-platform }
+        - { code: unit,        name: 单位,     type: STRING,  owner: maint-platform }
+        - { code: warehouse,   name: 仓库,     type: STRING,  owner: maint-platform }
+        - { code: unitPrice,   name: 单价,     type: DECIMAL, typeConfig: { precision: 12, scale: 2, unit: CNY }, owner: maint-platform, description: 敏感字段，非仓管角色掩码 }
+
+    - code: partConsumption
+      name: 备件消耗
+      primaryKey: id
+      titleProperty: id
+      owner: maint-platform
+      description: 带属性的关系表：一条消耗记录同时连着工单和备件
+      binding:
+        sourceKind: TABLE
+        sourceRef: maint.part_consumption
+        syncMode: VIRTUAL
+      properties:
+        - { code: id,          name: 消耗ID, type: STRING,    required: true, owner: maint-platform }
+        - { code: workOrderId, name: 工单,   type: REF,       typeConfig: { ref: maint.workOrder }, required: true, owner: maint-platform }
+        - { code: partId,      name: 备件,   type: REF,       typeConfig: { ref: maint.sparePart }, required: true, owner: maint-platform }
+        - { code: qty,         name: 数量,   type: INT,       required: true, owner: maint-platform }
+        - { code: issuedAt,    name: 出库时间, type: TIMESTAMP, required: true, owner: maint-platform }
+        - { code: issuedBy,    name: 出库人, type: STRING,    owner: maint-platform }
+
+  # -------------------------------------------------------------------
+  # 关系
+  # inverse 只是反向遍历时的显示名：反向路径由同一条绑定的 from/to 列
+  # 自动推导，不需要再定义一条反向关系。
+  # -------------------------------------------------------------------
+  relations:
+    - code: siteEquipment
+      name: 站点包含设备
+      from: maint.site
+      to: maint.equipment
+      cardinality: ONE_TO_MANY
+      inverse: locatedAt
+      binding: { joinKind: FK_COLUMN, connector: maint-pg, config: { fromColumn: id, toColumn: site_id } }
+
+    - code: equipmentPlan
+      name: 设备维保计划
+      from: maint.equipment
+      to: maint.maintenancePlan
+      cardinality: ONE_TO_MANY
+      inverse: plannedFor
+      binding: { joinKind: FK_COLUMN, connector: maint-pg, config: { fromColumn: id, toColumn: equipment_id } }
+
+    - code: equipmentWorkOrder
+      name: 设备工单
+      from: maint.equipment
+      to: maint.workOrder
+      cardinality: ONE_TO_MANY
+      inverse: raisedFor
+      binding: { joinKind: FK_COLUMN, connector: maint-pg, config: { fromColumn: id, toColumn: equipment_id } }
+
+    - code: workOrderTechnician
+      name: 工单负责技师
+      from: maint.workOrder
+      to: maint.technician
+      cardinality: MANY_TO_ONE
+      inverse: assignedWorkOrders
+      binding: { joinKind: FK_COLUMN, connector: maint-pg, config: { fromColumn: assignee_id, toColumn: id } }
+
+    - code: workOrderConsumption
+      name: 工单备件消耗
+      from: maint.workOrder
+      to: maint.partConsumption
+      cardinality: ONE_TO_MANY
+      inverse: belongsToWorkOrder
+      binding: { joinKind: FK_COLUMN, connector: maint-pg, config: { fromColumn: id, toColumn: work_order_id } }
+
+    - code: sparePartConsumption
+      name: 备件消耗记录
+      from: maint.sparePart
+      to: maint.partConsumption
+      cardinality: ONE_TO_MANY
+      inverse: consumedPart
+      binding: { joinKind: FK_COLUMN, connector: maint-pg, config: { fromColumn: id, toColumn: part_id } }
+
+  # -------------------------------------------------------------------
+  # 函数（只读、确定性、有超时）
+  # -------------------------------------------------------------------
+  functions:
+    - code: overdueDays
+      name: 保养超期天数
+      implKey: maintOverdueDays
+      owner: maint-platform
+      timeoutMs: 1000
+      description: 该设备所有有效计划中，最早一次到期距今的超期天数；未到期返回负数
+      inputSchema:
+        type: object
+        required: [equipmentId]
+        properties:
+          equipmentId: { type: string }
+      outputSchema:
+        type: object
+        properties:
+          days: { type: integer }
+
+    - code: maintenanceRiskScore
+      name: 维保风险评分
+      implKey: maintRiskScore
+      owner: maint-platform
+      timeoutMs: 2000
+      description: 关键度 + 超期天数 + 近 90 天故障工单数 + 备件可得性，加权得 0-100
+      inputSchema:
+        type: object
+        required: [equipmentId]
+        properties:
+          equipmentId: { type: string }
+      outputSchema:
+        type: object
+        properties:
+          score: { type: integer }
+          level: { type: string, enum: [低, 中, 高] }
+          factors:
+            type: array
+            items: { type: object }
+
+    - code: spareReadiness
+      name: 备件齐套率
+      implKey: maintSpareReadiness
+      owner: maint-platform
+      timeoutMs: 2000
+      description: 该设备常用备件中，库存高于安全库存的比例；缺口清单同时返回
+      inputSchema:
+        type: object
+        required: [equipmentId]
+        properties:
+          equipmentId: { type: string }
+      outputSchema:
+        type: object
+        properties:
+          readyRatio: { type: number }
+          shortages:
+            type: array
+            items: { type: object }
+
+    - code: technicianMatch
+      name: 技师匹配度
+      implKey: maintTechnicianMatch
+      owner: maint-platform
+      timeoutMs: 1000
+      description: 技能匹配 50% + 同站点 30% + 当前负载 20%，输出 0-100 与理由
+      inputSchema:
+        type: object
+        required: [workOrderId, technicianId]
+        properties:
+          workOrderId: { type: string }
+          technicianId: { type: string }
+      outputSchema:
+        type: object
+        properties:
+          score: { type: integer }
+          reasons: { type: array, items: { type: string } }
+
+    - code: slaBreach
+      name: SLA 超时判定
+      implKey: maintSlaBreach
+      owner: maint-platform
+      timeoutMs: 500
+      inputSchema:
+        type: object
+        required: [workOrderId]
+        properties:
+          workOrderId: { type: string }
+      outputSchema:
+        type: object
+        properties:
+          breached: { type: boolean }
+          remainingMinutes: { type: integer }
+
+  # -------------------------------------------------------------------
+  # 动作（唯一允许写业务的入口）
+  # -------------------------------------------------------------------
+  actions:
+    - code: createWorkOrder
+      name: 创建工单
+      owner: maint-platform
+      target: maint.equipment
+      idempotent: true
+      idempotencyKeyExpr: 'equipmentId + ":" + type + ":" + today()'
+      compensable: false
+      sideEffects: [eam.work_order]
+      paramSchema:
+        type: object
+        required: [equipmentId, type, priority, symptom]
+        properties:
+          equipmentId: { type: string }
+          type: { type: string, enum: [预防, 故障, 抢修] }
+          priority: { type: string, enum: [P1, P2, P3, P4] }
+          symptom: { type: string, minLength: 5 }
+      preconditionExpr: "equipment.status != '报废'"
+
+    - code: assignTechnician
+      name: 派单给技师
+      owner: maint-platform
+      target: maint.workOrder
+      idempotent: true
+      idempotencyKeyExpr: 'workOrderId + ":" + technicianId'
+      compensable: true
+      compensateAction: unassignTechnician
+      sideEffects: [eam.work_order, notify.sms]
+      paramSchema:
+        type: object
+        required: [workOrderId, technicianId]
+        properties:
+          workOrderId: { type: string }
+          technicianId: { type: string }
+      preconditionExpr: >
+        workOrder.status == '待派'
+        and technician.status == '空闲'
+        and function('technicianMatch', {'workOrderId': workOrder.id, 'technicianId': technician.id}).score >= 60
+
+    - code: reserveSparePart
+      name: 预留备件
+      owner: maint-platform
+      target: maint.workOrder
+      idempotent: true
+      idempotencyKeyExpr: 'workOrderId + ":" + partId'
+      compensable: true
+      compensateAction: releaseSparePart
+      sideEffects: [wms.stock]
+      paramSchema:
+        type: object
+        required: [workOrderId, partId, qty]
+        properties:
+          workOrderId: { type: string }
+          partId: { type: string }
+          qty: { type: integer, minimum: 1 }
+      preconditionExpr: >
+        workOrder.status in ('已派', '处理中')
+        and sparePart.stockQty >= qty
+
+    - code: postponePlan
+      name: 延期维保计划
+      owner: maint-platform
+      target: maint.maintenancePlan
+      idempotent: true
+      idempotencyKeyExpr: 'planId + ":" + newDueDate'
+      compensable: false
+      sideEffects: [eam.maintenance_plan]
+      approvalPolicy:
+        mode: THRESHOLD
+        field: postponeDays
+        gt: 7
+        roles: [maint_supervisor]
+      paramSchema:
+        type: object
+        required: [planId, newDueDate, reason]
+        properties:
+          planId: { type: string }
+          newDueDate: { type: string, format: date }
+          reason: { type: string, minLength: 5 }
+      preconditionExpr: "newDueDate > plan.nextDueDate"
+
+    - code: closeWorkOrder
+      name: 关闭工单
+      owner: maint-platform
+      target: maint.workOrder
+      idempotent: true
+      idempotencyKeyExpr: workOrderId
+      compensable: false
+      sideEffects: [eam.work_order]
+      paramSchema:
+        type: object
+        required: [workOrderId, resolution]
+        properties:
+          workOrderId: { type: string }
+          resolution: { type: string, minLength: 10 }
+      preconditionExpr: "workOrder.status == '待验收'"
+
+    - code: unassignTechnician
+      name: 撤销派单
+      owner: maint-platform
+      target: maint.workOrder
+      idempotent: true
+      compensable: false
+      sideEffects: [eam.work_order]
+      description: 仅作为 assignTechnician 的补偿动作，不直接暴露给 Agent
+      paramSchema:
+        type: object
+        required: [workOrderId]
+        properties:
+          workOrderId: { type: string }
+
+    - code: releaseSparePart
+      name: 释放备件预留
+      owner: maint-platform
+      target: maint.workOrder
+      idempotent: true
+      compensable: false
+      sideEffects: [wms.stock]
+      description: 仅作为 reserveSparePart 的补偿动作，不直接暴露给 Agent
+      paramSchema:
+        type: object
+        required: [workOrderId, partId]
+        properties:
+          workOrderId: { type: string }
+          partId: { type: string }
+
+  # -------------------------------------------------------------------
+  # 权限策略（数值越小优先级越高，DENY 压过 ALLOW）
+  # -------------------------------------------------------------------
+  permissionPolicies:
+    # Agent：能读、能提议，不能直接执行
+    - { subjectType: AGENT, subjectId: maint-agent, objectType: "*",        action: READ,    effect: ALLOW, priority: 10 }
+    - { subjectType: AGENT, subjectId: maint-agent, objectType: workOrder,  action: PROPOSE, effect: ALLOW, priority: 10 }
+    - { subjectType: AGENT, subjectId: maint-agent, objectType: "*",        action: EXECUTE, effect: DENY,  priority: 1 }
+
+    # 技师：只能看本站点，备件单价掩码
+    - { subjectType: ROLE, subjectId: maint_technician, objectType: equipment, action: READ, effect: ALLOW, priority: 20, rowFilter: "site_id = ${user.siteId}" }
+    - { subjectType: ROLE, subjectId: maint_technician, objectType: workOrder, action: READ, effect: ALLOW, priority: 20, rowFilter: "equipment.site_id = ${user.siteId}" }
+    - { subjectType: ROLE, subjectId: maint_technician, objectType: sparePart, action: READ, effect: ALLOW, priority: 30, fieldMask: [unitPrice] }
+
+    # 计划员：管计划，可执行 7 天内的延期
+    - { subjectType: ROLE, subjectId: maint_planner, objectType: maintenancePlan, action: CREATE,  effect: ALLOW, priority: 20 }
+    - { subjectType: ROLE, subjectId: maint_planner, objectType: maintenancePlan, action: UPDATE,  effect: ALLOW, priority: 20 }
+    - { subjectType: ROLE, subjectId: maint_planner, objectType: maintenancePlan, action: EXECUTE, effect: ALLOW, priority: 20 }
+
+    # 主管：可执行超 7 天的延期
+    - { subjectType: ROLE, subjectId: maint_supervisor, objectType: maintenancePlan, action: EXECUTE, effect: ALLOW, priority: 10 }
+
+    # 仓管：管备件
+    - { subjectType: ROLE, subjectId: maint_warehouse, objectType: sparePart, action: READ,   effect: ALLOW, priority: 20 }
+    - { subjectType: ROLE, subjectId: maint_warehouse, objectType: sparePart, action: UPDATE, effect: ALLOW, priority: 20 }
