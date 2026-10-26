@@ -36,6 +36,12 @@ public class OntologyLoader {
 
     private static final DateTimeFormatter RELEASE_FORMAT = DateTimeFormatter.ofPattern("yyyy.MM.dd.HHmmss");
 
+    /**
+     * 加载器版本。持久化格式或换算规则变了就 +1，域级哈希随之变化，下次启动自动重载。
+     * loader-v2：关系绑定配置统一成 snake_case（from_column/to_column）。
+     */
+    private static final String LOADER_VERSION = "loader-v2";
+
     private final JdbcTemplate jdbc;
 
     public OntologyLoader(JdbcTemplate jdbc) {
@@ -47,7 +53,7 @@ public class OntologyLoader {
         OntologyValidator.validate(def);
 
         String domainCode = def.metadata().code();
-        String domainHash = CanonicalJson.sha256(def);
+        String domainHash = CanonicalJson.sha256(CanonicalJson.of(def) + LOADER_VERSION);
 
         UUID domainId = upsertDomain(def);
         String existingHash = latestReleaseHash(domainId);
@@ -276,7 +282,7 @@ public class OntologyLoader {
                                 values (?, ?, ?, ?, ?::jsonb)
                                 """,
                         UUID.randomUUID(), relationId, connectorId, rb.joinKind(),
-                        json(rb.config() == null ? Map.of() : rb.config()));
+                        json(normalizeJoinConfig(rb.config())));
             }
             count++;
         }
@@ -371,6 +377,25 @@ public class OntologyLoader {
     }
 
     // ------------------------------------------------------------------ utils
+
+    /** YAML 里写驼峰（fromColumn），入库统一成下划线，查询层只认一种写法。 */
+    private Map<String, Object> normalizeJoinConfig(Map<String, Object> raw) {
+        Map<String, Object> config = new LinkedHashMap<>();
+        if (raw != null) {
+            config.putAll(raw);
+        }
+        rename(config, "fromColumn", "from_column");
+        rename(config, "toColumn", "to_column");
+        rename(config, "joinTable", "join_table");
+        return config;
+    }
+
+    private void rename(Map<String, Object> map, String from, String to) {
+        Object value = map.remove(from);
+        if (value != null && !map.containsKey(to)) {
+            map.put(to, value);
+        }
+    }
 
     private String stripDomain(String ref) {
         if (ref == null) {

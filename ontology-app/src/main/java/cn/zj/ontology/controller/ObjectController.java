@@ -2,6 +2,7 @@ package cn.zj.ontology.controller;
 
 import cn.zj.ontology.OntologyProperties;
 import cn.zj.ontology.runtime.query.ObjectQueryService;
+import cn.zj.ontology.runtime.query.RelationQueryService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,10 +26,14 @@ public class ObjectController {
     private static final Set<String> RESERVED = Set.of("limit", "offset", "fields");
 
     private final ObjectQueryService queryService;
+    private final RelationQueryService relationService;
     private final OntologyProperties properties;
 
-    public ObjectController(ObjectQueryService queryService, OntologyProperties properties) {
+    public ObjectController(ObjectQueryService queryService,
+                            RelationQueryService relationService,
+                            OntologyProperties properties) {
         this.queryService = queryService;
+        this.relationService = relationService;
         this.properties = properties;
     }
 
@@ -51,5 +56,16 @@ public class ObjectController {
     @Operation(summary = "按主键查询单个对象")
     public Map<String, Object> get(@PathVariable String type, @PathVariable String id) {
         return queryService.get(properties.domain(), type, id);
+    }
+
+    @GetMapping("/{type}/{id}/relations/{relation}")
+    @Operation(summary = "按关系遍历",
+            description = "正反两个方向都支持：从站点查设备、从设备反查站点，都走同一个关系编码")
+    public RelationQueryService.RelationResult relations(
+            @PathVariable String type,
+            @PathVariable String id,
+            @PathVariable String relation,
+            @RequestParam(required = false) Integer limit) {
+        return relationService.traverse(properties.domain(), type, id, relation, limit);
     }
 }

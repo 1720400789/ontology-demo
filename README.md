@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-P0 垂直切片进行中。W1 已完成：本体加载器把 YAML 写入元模型、通用对象查询接口、演示数据、10 条评测用例。
+P0 垂直切片进行中。W1 已完成，W2 完成关系遍历与函数引擎，还剩评测跑批。
 
-下一步 W2：关系遍历与函数引擎。
+下一步：评测跑批（W3 开始时补），然后动作网关与权限。
 
 战略、里程碑、风险见 [docs/00-plan.md](docs/00-plan.md)。
 
@@ -67,11 +67,39 @@ curl "http://localhost:8080/api/objects/equipment?fields=id,name&limit=2"
  "items":[{"id":"E-1001","name":"1# 主泵","criticality":"A"}]}
 ```
 
-## 下一步（W2）
+### 关系遍历
 
-- [ ] 关系遍历：站点 → 设备 → 工单 → 备件消耗，递归 CTE
-- [ ] 函数引擎：只读事务 + 超时 + JSON Schema 校验，先实现 `overdueDays`、`spareReadiness`
-- [ ] 评测跑批：把 `eval_case` 变成可执行的回归
+```bash
+# 正向：站点 → 设备
+curl "http://localhost:8080/api/objects/site/S-001/relations/siteEquipment"
+
+# 反向：设备 → 站点
+curl "http://localhost:8080/api/objects/equipment/E-1001/relations/siteEquipment"
+```
+
+## 函数接口
+
+```bash
+# 列出函数与入参 schema（Agent 生成工具定义用）
+curl "http://localhost:8080/api/functions"
+
+# 调用：数值必须来自函数，不能由模型心算
+curl -X POST "http://localhost:8080/api/functions/overdueDays/invoke" \
+     -H "Content-Type: application/json" \
+     -d '{"equipmentId":"E-1001"}'
+```
+
+```json
+{"function":"overdueDays","version":1,"latencyMs":11,
+ "result":{"hasPlan":true,"overdue":true,"nextDueDate":"2026-10-13","days":13}}
+```
+
+## W2 进度
+
+- [x] 关系遍历：正反双向，两条查询实现，不引入图库
+- [x] 函数引擎：虚拟线程超时 + 入参校验 + 结构性只读（`FunctionContext` 不暴露写接口）
+- [x] `overdueDays`、`spareReadiness` 两个实现
+- [ ] 评测跑批（顺延到 W3 开头）
 
 ## 本地依赖
 
