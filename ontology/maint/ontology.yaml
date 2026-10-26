@@ -393,9 +393,7 @@ spec:
       compensable: false
       sideEffects: [eam.maintenance_plan]
       approvalPolicy:
-        mode: THRESHOLD
-        field: postponeDays
-        gt: 7
+        mode: ROLE
         roles: [maint_supervisor]
       paramSchema:
         type: object
@@ -404,7 +402,7 @@ spec:
           planId: { type: string }
           newDueDate: { type: string, format: date }
           reason: { type: string, minLength: 5 }
-      preconditionExpr: "newDueDate > plan.nextDueDate"
+      preconditionExpr: "newDueDate > maintenancePlan.nextDueDate"
 
     - code: closeWorkOrder
       name: 关闭工单
@@ -456,22 +454,28 @@ spec:
   # -------------------------------------------------------------------
   permissionPolicies:
     # Agent：能读、能提议，不能直接执行
-    - { subjectType: AGENT, subjectId: maint-agent, objectType: "*",        action: READ,    effect: ALLOW, priority: 10 }
-    - { subjectType: AGENT, subjectId: maint-agent, objectType: workOrder,  action: PROPOSE, effect: ALLOW, priority: 10 }
-    - { subjectType: AGENT, subjectId: maint-agent, objectType: "*",        action: EXECUTE, effect: DENY,  priority: 1 }
+    - { subjectType: AGENT, subjectId: maint-agent, objectType: "*",              action: READ,    effect: ALLOW, priority: 10 }
+    - { subjectType: AGENT, subjectId: maint-agent, objectType: equipment,        action: PROPOSE, effect: ALLOW, priority: 10 }
+    - { subjectType: AGENT, subjectId: maint-agent, objectType: maintenancePlan,  action: PROPOSE, effect: ALLOW, priority: 10 }
+    - { subjectType: AGENT, subjectId: maint-agent, objectType: workOrder,        action: PROPOSE, effect: ALLOW, priority: 10 }
+    - { subjectType: AGENT, subjectId: maint-agent, objectType: "*",              action: EXECUTE, effect: DENY,  priority: 1 }
 
     # 技师：只能看本站点，备件单价掩码
     - { subjectType: ROLE, subjectId: maint_technician, objectType: equipment, action: READ, effect: ALLOW, priority: 20, rowFilter: "site_id = ${user.siteId}" }
     - { subjectType: ROLE, subjectId: maint_technician, objectType: workOrder, action: READ, effect: ALLOW, priority: 20, rowFilter: "equipment.site_id = ${user.siteId}" }
     - { subjectType: ROLE, subjectId: maint_technician, objectType: sparePart, action: READ, effect: ALLOW, priority: 30, fieldMask: [unitPrice] }
 
-    # 计划员：管计划，可执行 7 天内的延期
+    # 计划员：管计划，可执行计划延期与建单
+    - { subjectType: ROLE, subjectId: maint_planner, objectType: "*",             action: READ,    effect: ALLOW, priority: 20 }
     - { subjectType: ROLE, subjectId: maint_planner, objectType: maintenancePlan, action: CREATE,  effect: ALLOW, priority: 20 }
     - { subjectType: ROLE, subjectId: maint_planner, objectType: maintenancePlan, action: UPDATE,  effect: ALLOW, priority: 20 }
     - { subjectType: ROLE, subjectId: maint_planner, objectType: maintenancePlan, action: EXECUTE, effect: ALLOW, priority: 20 }
+    - { subjectType: ROLE, subjectId: maint_planner, objectType: equipment,       action: EXECUTE, effect: ALLOW, priority: 20 }
+    - { subjectType: ROLE, subjectId: maint_planner, objectType: workOrder,       action: EXECUTE, effect: ALLOW, priority: 20 }
 
     # 主管：可执行超 7 天的延期
     - { subjectType: ROLE, subjectId: maint_supervisor, objectType: maintenancePlan, action: EXECUTE, effect: ALLOW, priority: 10 }
+    - { subjectType: ROLE, subjectId: maint_supervisor, objectType: equipment,       action: EXECUTE, effect: ALLOW, priority: 10 }
 
     # 仓管：管备件
     - { subjectType: ROLE, subjectId: maint_warehouse, objectType: sparePart, action: READ,   effect: ALLOW, priority: 20 }

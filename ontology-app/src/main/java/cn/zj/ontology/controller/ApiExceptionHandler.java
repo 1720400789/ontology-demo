@@ -1,8 +1,10 @@
 package cn.zj.ontology.controller;
 
 import cn.zj.ontology.core.OntologyValidationException;
+import cn.zj.ontology.runtime.action.ActionException;
 import cn.zj.ontology.runtime.function.FunctionException;
 import cn.zj.ontology.runtime.query.ObjectQueryException;
+import cn.zj.ontology.runtime.security.ForbiddenException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -46,6 +48,33 @@ public class ApiExceptionHandler {
             case INTERNAL -> "函数执行失败";
         };
         return problem(status, title, e.getMessage());
+    }
+
+    @ExceptionHandler(ActionException.class)
+    public ProblemDetail handleAction(ActionException e) {
+        HttpStatus status = switch (e.kind()) {
+            case NOT_FOUND -> HttpStatus.NOT_FOUND;
+            case BAD_REQUEST -> HttpStatus.BAD_REQUEST;
+            case CONFLICT -> HttpStatus.CONFLICT;
+            case NOT_IMPLEMENTED -> HttpStatus.NOT_IMPLEMENTED;
+            case INTERNAL -> HttpStatus.INTERNAL_SERVER_ERROR;
+        };
+        if (status == HttpStatus.INTERNAL_SERVER_ERROR) {
+            log.error("动作执行失败", e);
+        }
+        String title = switch (e.kind()) {
+            case NOT_FOUND -> "动作不存在";
+            case BAD_REQUEST -> "动作参数不合法";
+            case CONFLICT -> "动作状态冲突";
+            case NOT_IMPLEMENTED -> "动作尚未实现";
+            case INTERNAL -> "动作执行失败";
+        };
+        return problem(status, title, e.getMessage());
+    }
+
+    @ExceptionHandler(ForbiddenException.class)
+    public ProblemDetail handleForbidden(ForbiddenException e) {
+        return problem(HttpStatus.FORBIDDEN, "没有权限", e.getMessage());
     }
 
     @ExceptionHandler(OntologyValidationException.class)

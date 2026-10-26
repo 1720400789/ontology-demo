@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-P0 垂直切片进行中。W1 已完成，W2 完成关系遍历与函数引擎，还剩评测跑批。
+P0 垂直切片进行中。W1（加载与查询）、W2（关系与函数）、W3（权限与动作网关）已完成，评测器可跑通对象级断言。
 
-下一步：评测跑批（W3 开始时补），然后动作网关与权限。
+下一步 W4：把元模型编译成 MCP 工具，接一个真实 Agent 跑端到端。
 
 战略、里程碑、风险见 [docs/00-plan.md](docs/00-plan.md)。
 
@@ -94,12 +94,57 @@ curl -X POST "http://localhost:8080/api/functions/overdueDays/invoke" \
  "result":{"hasPlan":true,"overdue":true,"nextDueDate":"2026-10-13","days":13}}
 ```
 
-## W2 进度
+## W3 进度
 
-- [x] 关系遍历：正反双向，两条查询实现，不引入图库
-- [x] 函数引擎：虚拟线程超时 + 入参校验 + 结构性只读（`FunctionContext` 不暴露写接口）
-- [x] `overdueDays`、`spareReadiness` 两个实现
-- [ ] 评测跑批（顺延到 W3 开头）
+- [x] 权限：行过滤（`site_id = ${user.siteId}`）、字段掩码、`PROPOSE` / `EXECUTE` 分离
+- [x] 动作网关：propose → approve → execute，幂等键、前置条件、审批策略、审计
+- [x] 两个动作执行器：`createWorkOrder`（自动通过）、`postponePlan`（需主管审批）
+- [x] 评测跑批：`POST /api/eval/run`，对象级断言可跑通（`gold-001` PASS）
+- [ ] 需要 Agent 参与才能判定的用例仍标记 SKIPPED，W4 接上 Agent 后再补
+
+## 身份与权限
+
+所有接口靠请求头识别调用者（W3 是临时认证，接 OIDC 时只换 `ActorResolver`）：
+
+```
+X-Actor-Id:    u-1001 / maint-agent
+X-Actor-Type:  USER / AGENT / SERVICE
+X-Actor-Roles: maint_planner,maint_supervisor
+X-Actor-Site:  S-001        # 行过滤用的属性
+```
+
+```bash
+# 匿名 → 403
+curl "http://localhost:8081/api/objects/equipment?limit=2"
+
+# 技师：只能看到本站点，备件单价被掩码
+curl -H "X-Actor-Id: u-2001" \
+     -H "X-Actor-Roles: maint_technician" \
+     -H "X-Actor-Site: S-001" \
+     "http://localhost:8081/api/objects/equipment?limit=20"
+```
+
+## 动作接口
+
+```bash
+# 1. Agent 提议（自动通过的策略直接 APPROVED）
+curl -X POST "http://localhost:8081/api/actions/createWorkOrder/propose" \
+     -H "X-Actor-Id: maint-agent" -H "X-Actor-Type: AGENT" \
+     -H "Content-Type: application/json" \
+     -d '{"targetId":"E-1001","params":{"equipmentId":"E-1001","type":"抢修","priority":"P2","symptom":"轴承温度持续高于 85 度"}}'
+
+# 2. 需要审批的动作：Agent 提议后是 PROPOSED
+curl -X POST "http://localhost:8081/api/actions/postponePlan/propose" \
+     -H "X-Actor-Id: maint-agent" -H "X-Actor-Type: AGENT" \
+     -H "Content-Type: application/json" \
+     -d '{"targetId":"P-2001","params":{"planId":"P-2001","newDueDate":"2026-11-20","reason":"备件到货延迟"}}'
+
+# 3. 主管审批 + 执行
+curl -X POST "http://localhost:8081/api/actions/pending/{id}/approve" -H "X-Actor-Id: u-9001" -H "X-Actor-Roles: maint_supervisor"
+curl -X POST "http://localhost:8081/api/actions/pending/{id}/execute" -H "X-Actor-Id: u-9001" -H "X-Actor-Roles: maint_supervisor"
+```
+
+Agent 直接执行会被显式拒绝（`EXECUTE` 上有一条 DENY），重复提议会命中幂等键返回同一条记录。
 
 ## 本地依赖
 
@@ -111,7 +156,7 @@ curl -X POST "http://localhost:8080/api/functions/overdueDays/invoke" \
 
 ```sql
 CREATE ROLE ontology LOGIN PASSWORD 'ontology';
-CREATE DATABASE ontology      OWNER ontology ENCODING 'UTF8';
+CREATE DATABASE ontology_demo OWNER ontology ENCODING 'UTF8';
 CREATE DATABASE ontology_test OWNER ontology ENCODING 'UTF8';
 ```
 
@@ -119,7 +164,7 @@ CREATE DATABASE ontology_test OWNER ontology ENCODING 'UTF8';
 
 ```powershell
 $env:JAVA_HOME   = 'D:\jdk-21.0.11'
-$env:DB_URL      = 'jdbc:postgresql://localhost:5432/ontology'
+$env:DB_URL      = 'jdbc:postgresql://localhost:5432/ontology_demo'
 $env:DB_USER     = 'ontology'
 $env:DB_PASSWORD = 'ontology'
 & 'D:\apache-maven-3.9.16\bin\mvn.cmd' -pl ontology-app spring-boot:run
@@ -128,12 +173,19 @@ $env:DB_PASSWORD = 'ontology'
 - Swagger UI：<http://localhost:8080/swagger-ui.html>
 - 健康检查：<http://localhost:8080/actuator/health>
 
+两个环境说明：
+
+- **Flyway 当前是关闭的**（`spring.flyway.enabled: false`，库里的表是手工建的）。新环境要么手工执行 `db/migration` 下的 V1–V4，要么把开关打开让 Flyway 跑。
+- **8080 端口被一个旧进程占着**（PID 8904，在当前沙箱里不可见也杀不掉）。验证时用 `SERVER_PORT=8081` 启动，所以上面的示例都是 8081。
+
 ## 踩过的坑
 
 1. **Boot 4 把 Flyway 自动配置拆成了独立模块**。只引 `flyway-core` 不会报错，但迁移根本不执行，库一直是空的。必须引 `spring-boot-starter-flyway`。
 2. **Flyway 默认替换 `${...}` 占位符**。DDL 注释里有 `${user.siteId}`、`${tenant}`，启动时会报 `No value provided for placeholder`。已用 `spring.flyway.placeholder-replacement=false` 关闭。
 3. **Flyway 比 `ApplicationRunner` 先执行**。迁移脚本里不能假设 Loader 已经写过数据；`V3__eval_cases.sql` 因此先 `insert ... on conflict do nothing` 建域，再插评测用例。
 4. **`BigDecimal.stripTrailingZeros()` 会把 110.00 变成 `1.1E+2`**。整数部分要转 `BigInteger` 再返回，否则 API 里会出现科学计数法。
+5. **`audit_log.operation` 的 CHECK 约束漏了 `APPROVE` / `REJECT`**。审批时写审计直接失败，表现为 500。已加 `V4__audit_operations.sql`。
+6. **前置条件里的变量名必须是对象类型 code**。`plan.nextDueDate` 解析不到（变量名要对 `maintenancePlan`），会让条件永远为假。
 
 ## 不做的事（V1）
 

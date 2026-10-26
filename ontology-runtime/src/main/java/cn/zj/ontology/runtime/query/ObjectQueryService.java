@@ -30,6 +30,11 @@ public class ObjectQueryService {
 
     public ObjectPage list(String domainCode, String typeCode, Map<String, String> filters,
                            String fields, Integer limit, Integer offset) {
+        return list(domainCode, typeCode, filters, fields, limit, offset, null);
+    }
+
+    public ObjectPage list(String domainCode, String typeCode, Map<String, String> filters,
+                           String fields, Integer limit, Integer offset, SqlPredicate extra) {
         ObjectTypeMeta meta = meta(domainCode, typeCode);
 
         int safeLimit = clamp(limit == null ? DEFAULT_LIMIT : limit, 1, MAX_LIMIT);
@@ -41,6 +46,13 @@ public class ObjectQueryService {
 
         if (meta.binding().baseFilter() != null && !meta.binding().baseFilter().isBlank()) {
             where.append("(").append(meta.binding().baseFilter()).append(")");
+        }
+        if (extra != null && !extra.isEmpty()) {
+            if (!where.isEmpty()) {
+                where.append(" and ");
+            }
+            where.append("(").append(extra.sql()).append(")");
+            params.addAll(extra.params());
         }
         for (Map.Entry<String, String> e : filters.entrySet()) {
             PropertyMeta p = meta.property(e.getKey());
@@ -83,11 +95,24 @@ public class ObjectQueryService {
     }
 
     public Map<String, Object> get(String domainCode, String typeCode, String id) {
+        return get(domainCode, typeCode, id, null);
+    }
+
+    public Map<String, Object> get(String domainCode, String typeCode, String id, SqlPredicate extra) {
         ObjectTypeMeta meta = meta(domainCode, typeCode);
         List<PropertyMeta> properties = meta.properties();
 
+        StringBuilder where = new StringBuilder(whereBase(meta));
+        List<Object> params = new ArrayList<>();
+        if (extra != null && !extra.isEmpty()) {
+            where.append(" and (").append(extra.sql()).append(")");
+            params.addAll(extra.params());
+        }
+        where.append(" and ").append(meta.binding().pkColumn()).append("::text = ?");
+        params.add(id);
+
         String sql = "select " + RowSupport.selectList(properties) + " from " + meta.binding().sourceRef()
-                + whereBase(meta) + " and " + meta.binding().pkColumn() + "::text = ? limit 1";
+                + where + " limit 1";
 
         List<Map<String, Object>> rows = jdbc.query(sql, (rs, rowNum) -> {
             Map<String, Object> row = new LinkedHashMap<>();
@@ -96,7 +121,7 @@ public class ObjectQueryService {
                 row.put(p.code(), RowSupport.normalize(rs.getObject(i++), p.dataType()));
             }
             return row;
-        }, id);
+        }, params.toArray());
 
         if (rows.isEmpty()) {
             throw ObjectQueryException.notFound("对象 " + typeCode + " 不存在: " + id);

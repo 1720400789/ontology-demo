@@ -11,7 +11,7 @@ spring:
       enabled: true
 
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5432/ontology}
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/ontology_demo}
     username: ${DB_USER:ontology}
     password: ${DB_PASSWORD:ontology}
     hikari:
