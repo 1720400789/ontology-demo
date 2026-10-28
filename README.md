@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-P0 垂直切片进行中。W1（加载与查询）、W2（关系与函数）、W3（权限与动作网关）已完成，评测器可跑通对象级断言。
+P0 垂直切片进行中。W1（加载与查询）、W2（关系与函数）、W3（权限与动作网关）已完成；W4 的 MCP 工具层已打通（24 个工具），接真实模型还缺凭证。
 
-下一步 W4：把元模型编译成 MCP 工具，接一个真实 Agent 跑端到端。
+下一步：接一个支持 MCP 的客户端/模型，把评测里依赖 Agent 的用例跑起来。
 
 战略、里程碑、风险见 [docs/00-plan.md](docs/00-plan.md)。
 
@@ -145,6 +145,87 @@ curl -X POST "http://localhost:8081/api/actions/pending/{id}/execute" -H "X-Acto
 ```
 
 Agent 直接执行会被显式拒绝（`EXECUTE` 上有一条 DENY），重复提议会命中幂等键返回同一条记录。
+
+## MCP：把元模型编译成工具
+
+`POST /mcp` 提供 JSON-RPC 2.0 端点，支持 `initialize` / `tools/list` / `tools/call` / `ping`。
+工具全部由元模型生成，当前 **24 个**：
+
+- 7 个对象 × 2：`query_<type>` / `get_<type>`
+- 5 个函数：`fn_<code>`
+- 5 个非补偿动作：`action_<code>`
+
+```bash
+# 列出工具
+curl -X POST http://localhost:8081/mcp \
+  -H "Content-Type: application/json" \
+  -H "X-Actor-Id: maint-agent" -H "X-Actor-Type: AGENT" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+
+# 调工具
+curl -X POST http://localhost:8081/mcp \
+  -H "Content-Type: application/json" \
+  -H "X-Actor-Id: maint-agent" -H "X-Actor-Type: AGENT" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fn_overdue_days","arguments":{"equipmentId":"E-1001"}}}'
+```
+
+脚本化 Agent 演示（只走 MCP 工具）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/mcp-agent-demo.ps1
+```
+
+它依次执行：找站点 → 找该站 A 类设备 → 问超期天数 → 提议建单 → 尝试直接执行（被 403 拒绝）。
+
+**限制**：这是最小实现，不支持 SSE 流式传输、resources、prompts、sampling；生产环境建议换 Spring AI 的 MCP starter。另外这里**没有接大模型**，脚本是固定策略的 Agent，用来验证工具契约与权限边界，不是智能体本身。
+
+## 接入 DeepSeek（OpenAI 兼容）
+
+**关键点**：DeepSeek 不是 MCP 客户端，不能让它直连 `/mcp`。正确做法是在应用内做 function-calling 循环：
+
+```
+问题 → 模型（带 24 个本体工具）→ 返回 tool_calls → 我们执行 → 结果回填 → 模型 → 回答
+```
+
+配置（密钥只走环境变量，不写进仓库）：
+
+```powershell
+$env:DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
+$env:DEEPSEEK_MODEL    = 'deepseek-chat'
+$env:DEEPSEEK_API_KEY  = 'sk-...'
+```
+
+接口：
+
+```bash
+# 真正问模型（消耗 token）
+curl -X POST http://localhost:8081/api/agent/ask \
+  -H "Content-Type: application/json" \
+  -H "X-Actor-Id: maint-agent" -H "X-Actor-Type: AGENT" \
+  -d '{"question":"E-1001 保养超期几天？"}'
+
+# 只看会发给模型的 payload，不消耗 token
+curl -X POST http://localhost:8081/api/agent/preview \
+  -H "Content-Type: application/json" \
+  -d '{"question":"E-1001 保养超期几天？"}'
+```
+
+返回里带 `steps`：每一轮调了哪个工具、参数是什么、有没有报错，便于排查模型乱来。
+
+没有 key 时可以用桩服务验证循环：
+
+```powershell
+python scripts/stub-deepseek.py 9099
+$env:DEEPSEEK_BASE_URL = 'http://127.0.0.1:9099'
+$env:DEEPSEEK_API_KEY  = 'stub-key'
+```
+
+注意事项：
+
+- `deepseek-chat` 支持 function calling；`deepseek-reasoner`（R1）对 `tools` 支持有限，接工具建议用 chat。
+- 模型返回的 `tool_calls[].function.arguments` 是 JSON **字符串**，要自己解析。
+- 工具结果截断到 4000 字符，避免 token 爆炸。
+- 循环最多 6 轮（`ontology.agent.max-steps`），防止模型在工具间打转。
 
 ## 本地依赖
 

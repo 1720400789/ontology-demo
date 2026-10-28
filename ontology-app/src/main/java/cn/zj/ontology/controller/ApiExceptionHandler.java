@@ -77,6 +77,28 @@ public class ApiExceptionHandler {
         return problem(HttpStatus.FORBIDDEN, "没有权限", e.getMessage());
     }
 
+    @ExceptionHandler(cn.zj.ontology.agent.AgentException.class)
+    public ProblemDetail handleAgent(cn.zj.ontology.agent.AgentException e) {
+        HttpStatus status = HttpStatus.resolve(e.status());
+        if (status == null) {
+            status = HttpStatus.BAD_GATEWAY;
+        }
+        if (status.is5xxServerError()) {
+            log.error("Agent 调用失败", e);
+        }
+        String title = switch (status.value()) {
+            case 503 -> "Agent 未就绪";
+            case 504 -> "模型调用超时";
+            default -> "模型调用失败";
+        };
+        return problem(status, title, e.getMessage());
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ProblemDetail handleIllegalArgument(IllegalArgumentException e) {
+        return problem(HttpStatus.BAD_REQUEST, "请求参数不合法", e.getMessage());
+    }
+
     @ExceptionHandler(OntologyValidationException.class)
     public ProblemDetail handleOntology(OntologyValidationException e) {
         log.warn("本体校验失败", e);
